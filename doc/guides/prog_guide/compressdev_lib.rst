@@ -468,6 +468,38 @@ Currently chaining is not supported on compression API.
 		};
 	};
 
+Compression API Hash support
+----------------------------
+
+Compression API allow application to enable digest calculation
+alongside compression and decompression of data. PMD reflect its
+support for hash algorithms via capability algo feature flags.
+If supported, PMD calculates digest always on plaintext i.e.
+before compression and after decompression.
+
+Currently supported list of hash algos are SHA-1 and SHA2 family
+SHA256.
+
+.. code-block:: c
+
+	enum rte_comp_hash_algorithm {
+		RTE_COMP_HASH_ALGO_UNSPECIFIED = 0,
+		/**< No hash */
+		RTE_COMP_HASH_ALGO_SHA1,
+		/**< SHA1 hash algorithm */
+		RTE_COMP_HASH_ALGO_SHA2_256,
+		/**< SHA256 hash algorithm of SHA2 family */
+		RTE_COMP_HASH_ALGO_LIST_END
+	};
+
+If required, application should set valid hash algo in compress
+or decompress xforms during ``rte_compressdev_stream_create()``
+or ``rte_compressdev_private_xform_create()`` and pass a valid
+output buffer in ``rte_comp_op`` hash field struct to store the
+resulting digest. Buffer passed should be contiguous and of large
+enough length to store digest which is 20 bytes for SHA-1 and
+32 bytes for SHA2-256.
+
 Compression API Stateless operation
 ------------------------------------
 
@@ -604,6 +636,11 @@ it could produce before hitting out_of_space. Application would need to
 resubmit an full input with larger output buffer size, if it want to operation
 to be completed.
 
+Hash in Stateless
+~~~~~~~~~~~~~~~~~
+If hash is enabled, digest buffer will contain valid data after op is succesfully
+processed i.e. dequeued with status = RTE_COMP_OP_STATUS_SUCCESS.
+
 Compression API Stateful operation
 -----------------------------------
 
@@ -628,7 +665,7 @@ a particular stream in a single burst and must attach stream handle
 to each such op.
 
 Stream in Stateful operation
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 `stream`in DPDK compression is a logical entity which identify related set of ops, say, a one large
 file broken into multiple chunks then file is represented by a stream and each chunk of that file
@@ -745,10 +782,17 @@ Stateful and OUT_OF_SPACE
 
 If PMD support stateful operation then on OUT_OF_SPACE situation, it is not an
 error condition for PMD. In such case, PMD return with status
-RTE_COMP_OP_STATUS_OUT_OF_SPACE_RECOVERABLE with consumed = number of input bytes read and
-produced = length of complete output buffer.
-Application should enqueue next op with source starting at consumed+1 and an output
-buffer with available space.
+RTE_COMP_OP_STATUS_OUT_OF_SPACE_RECOVERABLE with consumed = number of input bytes
+read and produced = length of complete output buffer.
+Application should enqueue next op with source starting at consumed+1 and an
+output buffer with available space.
+
+Hash in Stateful
+~~~~~~~~~~~~~~~~
+If enabled, digest buffer will contain valid digest after last op in stream
+(having flush=RTE_COMP_OP_FLUSH_FINAL) is successfully processed i.e. dequeued
+with status = RTE_COMP_OP_STATUS_SUCCESS.
+
 
 Burst in compression API
 -------------------------
