@@ -4,7 +4,7 @@
 Compression Device Library
 ===========================
 
-The compression framework provides a generic set of APIs to performs compression services
+The compression framework provides a generic set of APIs to perform compression services
 as well as to query and configure compression devices both physical(hardware) and virtual(software)
 to perform those services. The framework currently only supports lossless compression schemes:
 Deflate and LZS.
@@ -28,14 +28,13 @@ From the command line using the --vdev EAL option
 
 .. code-block:: console
 
-   --vdev  '<pmd name>,max_nb_queue_pairs=2,socket_id=0'
+   --vdev  '<pmd name>,socket_id=0'
 
 Or, by using the rte_vdev_init API within the application code.
 
 .. code-block:: c
 
-   rte_vdev_init("<pmd_name>",
-                     "max_nb_queue_pairs=2,socket_id=0")
+   rte_vdev_init("<pmd_name>","socket_id=0")
 
 All virtual compression devices support the following initialization parameters:
 
@@ -76,12 +75,15 @@ parameters for socket selection and number of queue pairs.
 .. code-block:: c
 
     struct rte_compressdev_config {
-        int socket_id;
-        /**< Socket to allocate resources on */
-        uint16_t nb_queue_pairs;
-        /**< Number of queue pairs to configure on device */
-    };
-
+		int socket_id;
+		/**< Socket on which to allocate resources */
+		uint16_t nb_queue_pairs;
+		/**< Total number of queue pairs to configure on a device */
+		uint16_t max_nb_priv_xforms;
+		/**< Max number of private_xforms which will be created on the device */
+		uint16_t max_nb_streams;
+		/**< Max number of streams which will be created on the device */
+	};
 
 Configuration of Queue Pairs
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -147,9 +149,11 @@ Following are current compression algorithms feature flags:
 * CRC32 checksum generation
 * Adler and CRC checksum generation
 * Uncompressed blocks generation
+* SHA1 and SHA2-256 hash digest calculation on plaintext
+* Shareable priv_xform support for stateless operations
 
 Capabilities
-~~~~~~~~~~~~~
+~~~~~~~~~~~~
 PMD in its capability carry an algorithm as listed in
 enum ``rte_comp_algorithm`` and its associated feature flag and
 sliding window range in log base 2 value. Sliding window tells
@@ -228,7 +232,7 @@ Operation Representation
 
 Compression operation is described via ``struct rte_comp_op``. The operation structure
 includes the operation type (stateless or stateful), the operation status
-and the priv_xform/stream handle, source, destination and checksum buffer 
+and the priv_xform/stream handle, source, destination and checksum buffer
 pointers. It also contains the source mempool for the operation are allocated
 from. PMD consumes the input as mentioned in consumed field and update
 produced with amount of data of written into destination buffer along with
@@ -239,7 +243,7 @@ operation for applications purposes. Application software is responsible for spe
 all the operation specific fields in the ``rte_comp_op`` structure which are then used
 by the compression PMD to process the requested operation.
 
-.. code-block:: c 
+.. code-block:: c
 
 	struct rte_comp_op {
 
@@ -253,8 +257,8 @@ by the compression PMD to process the requested operation.
 			void *stream;
 			/**< Private PMD data derived initially from an rte_comp_xform,
 			 * which holds state and history data and evolves as operations
-			 * are processed. rte_comp_stream_create() must be called on a
-			 * device for all STATEFUL data streams and the resulting
+			 * are processed. rte_compressdev_stream_create() must be called
+			 * on a device for all STATEFUL data streams and the resulting
 			 * stream attached to the one or more operations associated
 			 * with the data stream.
 			 * All operations in a stream must be sent to the same device.
@@ -298,6 +302,19 @@ by the compression PMD to process the requested operation.
 			 * decompress direction.
 			 */
 		} dst;
+		struct {
+			uint8_t *digest;
+			/**< Output buffer to store hash output, if enabled in xform.
+			 * Buffer would contain valid value only after an op with
+			 * flush flag = RTE_COMP_FLUSH_FULL/FLUSH_FINAL is processed
+			 * successfully.
+			 *
+			 * Length of buffer should be contiguous and large enough to
+			 * accommodate digest produced by specific hash algo.
+			 */
+			rte_iova_t iova_addr;
+			/**< IO address of the buffer */
+		} hash;
 		enum rte_comp_flush_flag flush_flag;
 		/**< Defines flush characteristics for the output data.
 		 * Only applicable in compress direction
@@ -333,7 +350,8 @@ by the compression PMD to process the requested operation.
 		 * will be set to RTE_COMP_OP_STATUS_SUCCESS after operation
 		 * is successfully processed by a PMD
 		 */
-	}
+	} __rte_cache_aligned;
+
 
 Operation Management and Allocation
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -380,7 +398,7 @@ mbuf-chain and enqueue it for processing. Alternatively, application
 can also call make multiple sequential enqueue_burst()calls for each
 of them processing them statefully. See *Compression API Stateful Operation* for
 stateful processing of ops.
-	
+
 Operation Status
 ~~~~~~~~~~~~~~~~
 Each operation carry a status information updated by PMD after it is processed.
@@ -388,13 +406,13 @@ following are currently supported status:
 
 - RTE_COMP_OP_STATUS_SUCCESS,
 	Operation is successfully completed.
-	
+
 - RTE_COMP_OP_STATUS_NOT_PROCESSED,
 	Operation has not yet been processed by the device
-	
+
 - RTE_COMP_OP_STATUS_INVALID_ARGS,
 	Operation failed due to invalid arguments in request
-	
+
 - RTE_COMP_OP_STATUS_ERROR,
 	Operation failed because of internal error
 
@@ -410,15 +428,15 @@ following are currently supported status:
 	is not an error case. Output data up to op.produced can be used and
 	next op in the stream should continue on from op.consumed+1.
 
-produced,consumed And Operation Status
+Produced, Consumed And Operation Status
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-- If status is RTE_COMP_OP_STATUS_SUCCESS, 
+- If status is RTE_COMP_OP_STATUS_SUCCESS,
 	consumed = amount of data read from input buffer, and
 	produced = amount of data written in destination buffer
 - If status is RTE_COMP_OP_STATUS_FAILURE,
 	consumed = produced = 0 or undefined
-- If status is RTE_COMP_OP_STATUS_OUT_OF_SPACE_TERMINATED, 
-	consumed = 0 and 
+- If status is RTE_COMP_OP_STATUS_OUT_OF_SPACE_TERMINATED,
+	consumed = 0 and
 	produced = amount of data successfully produced until
 	out of space condition hit.	Application can consume output data, if required.
 - If status is RTE_COMP_OP_STATUS_OUT_OF_SPACE_RECOVERABLE,
@@ -449,28 +467,28 @@ Currently chaining is not supported on compression API.
 			/**< decompress xform */
 		};
 	};
-	
+
 Compression API Stateless operation
 ------------------------------------
 
 An op is processed stateless if it has
 - op_type set to RTE_COMP_OP_STATELESS
-- flush value set to RTE_FLUSH_FULL or RTE_FLUSH_FINAL 
+- flush value set to RTE_FLUSH_FULL or RTE_FLUSH_FINAL
 (required only on compression side),
 - All-of the required input in source buffer
- 
-When all of the above conditions are met, PMD initiates stateless processing 
-and releases acquired resources after processing of current operation is 
+
+When all of the above conditions are met, PMD initiates stateless processing
+and releases acquired resources after processing of current operation is
 complete. Application can enqueue multiple stateless ops in a single burst
 and must attach priv_xform handle to such ops.
- 
+
 priv_xform in Stateless operation
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 priv_xform is PMD internally managed private data that it maintain to do stateless processing.
-priv_xforms are intialized with xfrom by an application via making call to ``rte_comp_priv_xform_create``,
+priv_xforms are initialized with xfrom by an application via making call to ``rte_comp_priv_xform_create``,
 at an output PMD returns an opaque priv_xform reference with flag set to SHAREABLE or
-NON_SHAREABLE. If PMD support SHAREABLE priv_xform, then application can attach same priv_xform with 
+NON_SHAREABLE. If PMD support SHAREABLE priv_xform, then application can attach same priv_xform with
 many stateless ops at-a-time. If not, then application need to create as many priv_xforms as many are
 expected in flight.
 
@@ -479,7 +497,7 @@ expected in flight.
 .. figure:: img/stateless-op-shared.png
 
 
-Application should call ``rte_compressdev_private_xform_create()`` and attach to stateless op before 
+Application should call ``rte_compressdev_private_xform_create()`` and attach to stateless op before
 engueing them for processing and free via ``rte_compressdev_private_xform_free()`` during termmination.
 
 .. code-block:: c
@@ -487,7 +505,7 @@ engueing them for processing and free via ``rte_compressdev_private_xform_free()
    int __rte_experimental  rte_compressdev_private_xform_create(uint8_t dev_id,
                                         const struct rte_comp_xform *xform,
                                         void **private_xform);
-                   
+
    int __rte_experimental  rte_compressdev_private_xform_free(uint8_t dev_id, void *private_xform);
 
 An example sudo sample code to setup and process NUM_OPS stateless ops with each of length OP_LEN
@@ -499,7 +517,7 @@ using shareable priv_xform would look like:
      * sudo example to do stateless compression
      */
 
-	 
+
 	/* Create  operation pool. */
     op_pool = rte_comp_op_pool_create("comp_op_pool",
 						NUM_OPS,
@@ -510,7 +528,7 @@ using shareable priv_xform would look like:
         rte_exit(EXIT_FAILURE, "Cannot create op pool\n");
 
     /* Create the virtual device. */
- 
+
 	/* Create the compress transform. */
     struct rte_compress_compress_xform compress_xform = {
         .next = NULL,
@@ -529,16 +547,16 @@ using shareable priv_xform would look like:
     /* Create stream and initialize it for the compression device. */
 	if( priv xform shareable )
 		ret = rte_comp_priv_xform_create(cdev_id, &xform, &priv_xform);
-	else 
+	else
 		non-shareable = 1;
-    
+
 	/* Get a burst of operations. */
     struct rte_comp_op *comp_ops[CHUNK_LEN];
     if (rte_comp_op_bulk_alloc(op_pool, comp_ops, OP_LEN) == 0)
         rte_exit(EXIT_FAILURE, "Not enough compression operations available\n");
 
     /* Get a burst of src and dst mbufs. */
-    
+
     /* prepare source and destination mbufs for compression operations */
     unsigned int i;
     for (i = 0; i < NUM_OPS; i++) {
@@ -562,7 +580,7 @@ using shareable priv_xform would look like:
 		op->m_dst = dst_buf[i];
 		op->type = RTE_COMP_OP_STATELESS;
 		op->flush = RTE_COMP_FLUSH_FINAL;
-		
+
 		op->src.offset = 0;
 		op->dst.offset = 0;
 		op->src.length = OP_LEN;
@@ -575,11 +593,11 @@ using shareable priv_xform would look like:
 	}while (num_dqud < num_enqd);
 
 
-Stateless and OUT_OF_SPACE 
+Stateless and OUT_OF_SPACE
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-OUT_OF_SPACE is a condition when output buffer runs out of space and where PMD 
-still has more data to produce. If PMD run into such condition, then it's an 
+OUT_OF_SPACE is a condition when output buffer runs out of space and where PMD
+still has more data to produce. If PMD run into such condition, then it's an
 error condition if PMD returns RTE_COMP_OP_OUT_OF_SPACE_TERMINATED.
 In such case, PMD resets itself and can set consumed=0 and produced=amount of output
 it could produce before hitting out_of_space. Application would need to
@@ -590,15 +608,15 @@ Compression API Stateful operation
 -----------------------------------
 
 Compression API provide RTE_COMP_FF_STATEFUL_COMPRESSION and
-RTE_COMP_FF_STATEFUL_DECOMPRESSION feature flag for PMD to reflect 
-its support for Stateful operations. 
+RTE_COMP_FF_STATEFUL_DECOMPRESSION feature flag for PMD to reflect
+its support for Stateful operations.
 
-A Stateful operation in DPDK compression means application invokes enqueue 
-burst() multiple times to process related chunk of data because 
+A Stateful operation in DPDK compression means application invokes enqueue
+burst() multiple times to process related chunk of data because
 application broke data into several ops.
 
 In such case
-- ops are setup with op_type RTE_COMP_OP_STATEFUL, 
+- ops are setup with op_type RTE_COMP_OP_STATEFUL,
 - all ops except last set to flush value = RTE_COMP_NO/SYNC_FLUSH
 and last set to flush value RTE_COMP_FULL/FINAL_FLUSH.
 
@@ -607,7 +625,7 @@ stateful processing and releases acquired resources after processing
 operation with flush value = RTE_COMP_FLUSH_FULL/FINAL is complete.
 Unlike stateless, application can enqueue only one stateful op from
 a particular stream in a single burst and must attach stream handle
-to each such op. 
+to each such op.
 
 Stream in Stateful operation
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -621,12 +639,12 @@ it must attach to all of the ops carrying data of that stream.Since in stateful 
 op need previous op data for compression/decompression, thus PMD allocates and setup resources, such as,
 history, states etc with in a stream which it maintained during processing of such multiple related ops.
 
-Unlike priv_xforms, stream is always a NON_SHAREABLE entity. One stream handle must be attached to only 
+Unlike priv_xforms, stream is always a NON_SHAREABLE entity. One stream handle must be attached to only
 one set of related ops and cannot be reused until all of them are processed with status Success or failure.
 
 .. figure:: img/stateful-op.png
 
-Application should call ``rte_comp_stream_create()`` and attach to op before 
+Application should call ``rte_comp_stream_create()`` and attach to op before
 enqueing them for processing and free via ``rte_comp_stream_free()`` during
 termination. All ops that are to be processed statefully should carry *same* stream.
 
@@ -635,7 +653,7 @@ termination. All ops that are to be processed statefully should carry *same* str
    int __rte_experimental  rte_compressdev_stream_create(uint8_t dev_id,
 	                                      const struct rte_comp_xform *xform,
                                           void **stream);
-		
+
    int __rte_experimental  rte_compressdev_stream_free(uint8_t dev_id, void *stream);
 
 An example sudo sample code to setup and process a stream having NUM_CHUNKS with each chunk size of CHUNK_LEN would look like:
@@ -646,18 +664,18 @@ An example sudo sample code to setup and process a stream having NUM_CHUNKS with
      * Simple example to do stateful compression
      */
 
-	 
+
 	/* Create  operation pool. */
     op_pool = rte_comp_op_pool_create("comp_op_pool",
-							NUM_CHUNKS,
-							POOL_CACHE_SIZE,
-							0,
-							socket_id);
+					NUM_CHUNKS,
+					POOL_CACHE_SIZE,
+					0,
+					socket_id);
     if (op_pool == NULL)
         rte_exit(EXIT_FAILURE, "Cannot create op pool\n");
 
-	/* Create the virtual device. */
- 
+    /* Create the virtual device. */
+
 	/* Create the compress transform. */
     struct rte_compress_compress_xform compress_xform = {
         .next = NULL,
@@ -675,14 +693,14 @@ An example sudo sample code to setup and process a stream having NUM_CHUNKS with
 
     /* Create stream and initialize it for the compression device. */
 	rte_comp_stream_create(cdev_id, &xform, &stream);
-    
+
 	/* Get a burst of operations. */
     struct rte_comp_op *comp_ops[CHUNK_LEN];
     if (rte_comp_op_bulk_alloc(op_pool, comp_ops, CHUNK_LEN) == 0)
         rte_exit(EXIT_FAILURE, "Not enough compression operations available\n");
 
     /* Get a burst of src and dst mbufs. */
-    
+
     /* prepare source and destination mbufs for compression operations */
     unsigned int i;
     for (i = 0; i < NUM_CHUNKS; i++) {
@@ -725,11 +743,11 @@ An example sudo sample code to setup and process a stream having NUM_CHUNKS with
 Stateful and OUT_OF_SPACE
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-If PMD support stateful operation then on OUT_OF_SPACE situation, it is not an 
+If PMD support stateful operation then on OUT_OF_SPACE situation, it is not an
 error condition for PMD. In such case, PMD return with status
 RTE_COMP_OP_STATUS_OUT_OF_SPACE_RECOVERABLE with consumed = number of input bytes read and
 produced = length of complete output buffer.
-Application should enqueue next op with source starting at consumed+1 and an output 
+Application should enqueue next op with source starting at consumed+1 and an output
 buffer with available space.
 
 Burst in compression API
@@ -755,17 +773,17 @@ should belong to same stream in a single burst i.e. a burst can look like:
 |enqueue_burst |op1.no_flush | op2.no_flush | op3.flush_final | op4.no_flush | op5.no_flush |
 +--------------+-------------+--------------+-----------------+---------------+-------------+
 
-Where, op1 .. op5 all belong to different independent data units and can be of type : stateless or stateful. 
-Every op with type set to RTE_COMP_OP_TYPE_STATELESS must be attached to priv_xform and 
+Where, op1 .. op5 all belong to different independent data units and can be of type : stateless or stateful.
+Every op with type set to RTE_COMP_OP_TYPE_STATELESS must be attached to priv_xform and
 Every op with type set to RTE_COMP_OP_TYPE_STATEFUL *must* be attached to stream.
 
-Since each operation in a burst is independent and thus can complete 
-out-of-order,  applications which need ordering, should setup per-op user data 
-area with reordering information so that it can determine enqueue order at 
+Since each operation in a burst is independent and thus can complete
+out-of-order,  applications which need ordering, should setup per-op user data
+area with reordering information so that it can determine enqueue order at
 dequeue.
 
-Also if multiple threads calls enqueue_burst() on same queue pair then it’s 
-application onus to use proper locking mechanism to ensure exclusive enqueuing 
+Also if multiple threads calls enqueue_burst() on same queue pair then it’s
+application onus to use proper locking mechanism to ensure exclusive enqueuing
 of operations.
 
 Enqueue / Dequeue Burst APIs
@@ -782,7 +800,7 @@ enqueued.
 .. code-block:: c
 
    uint16_t rte_compressdev_enqueue_burst(uint8_t dev_id, uint16_t qp_id,
-					struct rte_comp_op **ops, uint16_t nb_ops)
+						struct rte_comp_op **ops, uint16_t nb_ops)
 
 The dequeue API uses the same format as the enqueue API of processed but
 the ``nb_ops`` and ``ops`` parameters are now used to specify the max processed
@@ -869,7 +887,7 @@ using deflate, using one of the sudo compress PMDs available in DPDK.
         rte_exit(EXIT_FAILURE, "Failed to configure compressdev %u", cdev_id);
 
     if (rte_compressdev_queue_pair_setup(cdev_id, 0, NUM_MAX_INFLIGHT_OPS,
-					socket_id()) < 0) 
+									socket_id()) < 0)
         rte_exit(EXIT_FAILURE, "Failed to setup queue pair\n");
 
     if (rte_compressdev_start(cdev_id) < 0)
@@ -892,17 +910,20 @@ using deflate, using one of the sudo compress PMDs available in DPDK.
 
     /* Create priv_xform and initialize it for the compression device. */
     void *priv_xform = NULL;
-    int mode = rte_compressdev_private_xform_create(cdev_id,
-					&compress_xforms, &priv_xform);
-    if (priv_xform == NULL)
-        rte_exit(EXIT_FAILURE, "priv_xform could not be created\n");
-
-	if (mode == RTE_COMP_PRIV_XFORM_SHAREABLE)
+    rte_compressdev_info_get(cdev_id, &dev_info);
+    if(dev_info.capability->comps_feature_flag & RTE_COMP_FF_SHAREABLE_PRIV_XFORM)
         rte_log(INFO, "using shareable priv_xform\n");
-	else {
-		rte_log(INFO, "priv_xform is non-shareable");
-		shareable = 0;
-	}
+    else {
+            rte_log(INFO, "priv_xform is non-shareable");
+            shareable = 0;
+         }
+
+    if (mode == RTE_COMP_PRIV_XFORM_SHAREABLE)
+       rte_log(INFO, "using shareable priv_xform\n");
+    else {
+            rte_log(INFO, "priv_xform is non-shareable");
+            shareable = 0;
+         }
 
     /* Get a burst of operations. */
     struct rte_comp_op *comp_ops[BURST_SIZE];
