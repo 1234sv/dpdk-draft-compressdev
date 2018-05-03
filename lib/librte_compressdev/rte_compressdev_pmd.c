@@ -3,7 +3,9 @@
  */
 
 #include <rte_malloc.h>
+#include <rte_kvargs.h>
 
+#include "rte_compressdev_internal.h"
 #include "rte_compressdev_pmd.h"
 
 int compressdev_logtype;
@@ -61,13 +63,6 @@ rte_compressdev_pmd_parse_input_args(
 			return -EINVAL;
 
 		ret = rte_kvargs_process(kvlist,
-				RTE_COMPRESSDEV_PMD_MAX_NB_QP_ARG,
-				&rte_compressdev_pmd_parse_uint_arg,
-				&params->max_nb_queue_pairs);
-		if (ret < 0)
-			goto free_kvlist;
-
-		ret = rte_kvargs_process(kvlist,
 				RTE_COMPRESSDEV_PMD_SOCKET_ID_ARG,
 				&rte_compressdev_pmd_parse_uint_arg,
 				&params->socket_id);
@@ -90,6 +85,7 @@ free_kvlist:
 struct rte_compressdev * __rte_experimental
 rte_compressdev_pmd_create(const char *name,
 		struct rte_device *device,
+		size_t private_data_size,
 		struct rte_compressdev_pmd_init_params *params)
 {
 	struct rte_compressdev *compressdev;
@@ -104,14 +100,14 @@ rte_compressdev_pmd_create(const char *name,
 			device->driver->name, name);
 
 	COMPRESSDEV_LOG(INFO,
-	"[%s] - Init parameters - name: %s, socket id: %d, max queue pairs: %u",
+	"[%s] - Init parameters - name: %s, socket id: %d",
 			device->driver->name, name,
-			params->socket_id, params->max_nb_queue_pairs);
+			params->socket_id);
 
 	/* allocate device structure */
 	compressdev = rte_compressdev_pmd_allocate(name, params->socket_id);
 	if (compressdev == NULL) {
-		COMPRESSDEV_LOG(ERR, "[%s] Failed to allocate comp device for %s",
+		COMPRESSDEV_LOG(ERR, "[%s] Failed to allocate comp device %s",
 				device->driver->name, name);
 		return NULL;
 	}
@@ -120,7 +116,7 @@ rte_compressdev_pmd_create(const char *name,
 	if (rte_eal_process_type() == RTE_PROC_PRIMARY) {
 		compressdev->data->dev_private =
 				rte_zmalloc_socket("compressdev device private",
-						params->private_data_size,
+						private_data_size,
 						RTE_CACHE_LINE_SIZE,
 						params->socket_id);
 
